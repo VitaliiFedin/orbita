@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Панель учителя – Орбітальна станція</title>
+<link rel="stylesheet" href="css/style.css">
+<style>
+  .main { max-width: 1200px; margin: 0 auto; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .row .field { margin: 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+  td.num, th.num { text-align: right; }
+  .bar { height: 8px; background: var(--accent-soft); border-radius: 4px; overflow: hidden; min-width: 80px; }
+  .bar i { display: block; height: 100%; background: var(--accent); }
+</style>
+</head>
+<body>
+<div class="topbar"><div class="title">Орбітальна станція<small>панель учителя</small></div></div>
+<main class="main">
+  <div class="statement">
+    <div class="row">
+      <div class="field"><label for="key">Ключ учителя</label><input id="key" type="password"></div>
+      <div class="field"><label for="cls">Клас (порожньо – усі)</label><input id="cls" placeholder="7-А"></div>
+      <button class="btn primary" id="load">Завантажити дані</button>
+      <span class="loading" id="msg"></span>
+    </div>
+  </div>
+  <div id="out"></div>
+</main>
+<script src="js/config.js"></script>
+<script src="js/tasks.js"></script>
+<script>
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const TASKS = {}; LEVELS.forEach(l => l.tasks.forEach(t => TASKS[t.id] = Object.assign({ level: l.id }, t)));
+const ERR = { wrong: 'неправильний результат', timeout: 'нескінченний цикл / задовго', SyntaxError: 'синтаксис', IndentationError: 'відступи',
+  NameError: 'невідоме ім’я', TypeError: 'типи (str/int)', ValueError: 'значення', EOFError: 'зайвий input()' };
+try { document.getElementById('key').value = sessionStorage.getItem('tkey') || ''; } catch (e) {}
+document.getElementById('load').onclick = async () => {
+  const key = document.getElementById('key').value.trim(), cls = document.getElementById('cls').value.trim();
+  const msg = document.getElementById('msg');
+  if (!CONFIG.REPORT_URL) { msg.textContent = 'У js/config.js не вказано REPORT_URL.'; return; }
+  try { sessionStorage.setItem('tkey', key); } catch (e) {}
+  msg.textContent = 'Завантаження…';
+  try {
+    const r = await fetch(CONFIG.REPORT_URL + '?key=' + encodeURIComponent(key) + '&cls=' + encodeURIComponent(cls));
+    const data = await r.json();
+    if (data.error) { msg.textContent = data.error; return; }
+    msg.textContent = 'Записів: ' + data.rows.length;
+    render(data.rows);
+  } catch (e) { msg.textContent = 'Не вдалося отримати дані: ' + e; }
+};
+function render(rows) {
+  const checks = rows.filter(r => r.result === 'ok' || r.result === 'fail');
+  // учні
+  const st = {};
+  checks.forEach(r => {
+    const k = r.cls + ' · ' + r.student; const s = st[k] || (st[k] = { done: new Set(), attempts: 0, hints: 0, maxLevel: 0, last: r.time });
+    s.attempts++; if (r.result === 'ok') { s.done.add(r.task); s.maxLevel = Math.max(s.maxLevel, +r.level); } s.last = r.time;
+  });
+  rows.filter(r => r.result === 'hint').forEach(r => { const k = r.cls + ' · ' + r.student; (st[k] || (st[k] = { done: new Set(), attempts: 0, hints: 0, maxLevel: 0 })).hints++; });
+  // завдання
+  const tk = {};
+  checks.forEach(r => {
+    const t = tk[r.task] || (tk[r.task] = { attempts: 0, fails: 0, solvers: new Set(), tried: new Set(), errors: {} });
+    t.attempts++; t.tried.add(r.cls + r.student);
+    if (r.result === 'ok') t.solvers.add(r.cls + r.student); else { t.fails++; const e = r.error || 'wrong'; t.errors[e] = (t.errors[e] || 0) + 1; }
+  });
+  const errAll = {}; checks.filter(r => r.result === 'fail').forEach(r => { const e = r.error || 'wrong'; errAll[e] = (errAll[e] || 0) + 1; });
+  const hard = Object.entries(tk).filter(([, t]) => t.attempts >= 3).sort((a, b) => b[1].fails / b[1].attempts - a[1].fails / a[1].attempts).slice(0, 8);
+  document.getElementById('out').innerHTML = `
+  <div class="grid2">
+    <div class="panel"><div class="panel-head">Завдання з найбільшою часткою помилок (тема для розбору на початку уроку)</div><div class="panel-body">
+      <table class="report"><tr><th>Завдання</th><th class="num">Спроб</th><th>Частка помилок</th><th>Типові помилки</th></tr>
+      ${hard.map(([id, t]) => `<tr><td>${esc(id)} ${esc(TASKS[id] ? TASKS[id].title : '')}</td><td class="num">${t.attempts}</td>
+        <td><div class="bar"><i style="width:${Math.round(100 * t.fails / t.attempts)}%"></i></div>${Math.round(100 * t.fails / t.attempts)}%</td>
+        <td>${Object.entries(t.errors).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([e, n]) => esc(ERR[e] || e) + ' (' + n + ')').join(', ')}</td></tr>`).join('') || '<tr><td colspan="4">Поки недостатньо даних.</td></tr>'}
+      </table></div></div>
+    <div class="panel"><div class="panel-head">Типи помилок у класі</div><div class="panel-body">
+      <table class="report"><tr><th>Тип помилки</th><th class="num">Кількість</th></tr>
+      ${Object.entries(errAll).sort((a, b) => b[1] - a[1]).map(([e, n]) => `<tr><td>${esc(ERR[e] || e)}</td><td class="num">${n}</td></tr>`).join('') || '<tr><td colspan="2">Помилок поки немає.</td></tr>'}
+      </table></div></div>
+  </div>
+  <div class="panel"><div class="panel-head">Учні</div><div class="panel-body">
+    <table class="report"><tr><th>Клас · код</th><th class="num">Виконано завдань</th><th class="num">Найвищий рівень</th><th class="num">Спроб</th><th class="num">Підказок</th></tr>
+    ${Object.entries(st).sort().map(([k, s]) => `<tr><td>${esc(k)}</td><td class="num">${s.done.size}</td><td class="num">${s.maxLevel || '–'}</td><td class="num">${s.attempts}</td><td class="num">${s.hints}</td></tr>`).join('')}
+    </table></div></div>`;
+}
+</script>
+</body>
+</html>
